@@ -1,0 +1,24 @@
+# NaviLens — Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# ── Core Vision ───────────────────────────────────────────────────────────────
+ultralytics>=8.3.0          # YOLOv8/v11 unified package (auto-downloads weights)
+opencv-python>=4.10.0       # Frame capture, drawing, display
+
+# ── Speech Recognition ────────────────────────────────────────────────────────
+SpeechRecognition>=3.11.0   # Google STT wrapper
+pyaudio>=0.2.14             # Microphone access (needs portaudio system lib)
+                            # Linux: sudo apt install portaudio19-dev
+                            # macOS: brew install portaudio
+
+# ── Text-to-Speech ────────────────────────────────────────────────────────────
+pyttsx3>=2.90               # Offline TTS engine
+gTTS>=2.5.1                 # Online Google TTS (optional)
+pygame>=2.6.0               # Audio playback for gTTS output
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+numpy>=1.26.0
+Pillow>=10.4.0
+
+# ── Optional: Gemini VLM integration (Objective 3) ────────────────────────────
+# google-generativeai>=0.8.0  # Uncomment when adding Gemini scene descriptions
