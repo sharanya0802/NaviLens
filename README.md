@@ -121,7 +121,7 @@ When ready to deploy on Raspberry Pi:
 
 ---
 
-## Future Additions (from Synopsis)
+## Future Additions
 - [ ] Google Gemini 2.0 Flash integration for richer scene descriptions
 - [ ] FastAPI dashboard for remote monitoring
 - [ ] Whisper STT (offline alternative to Google STT)
