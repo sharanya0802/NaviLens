@@ -1,6 +1,6 @@
 # NaviLens 🦯
 ### Voice Activated Visual Recognition and Audio Navigation for the Blind
-**Team UH38 | RV College of Engineering | 6th Semester Interdisciplinary Project**
+
 
 ---
 
