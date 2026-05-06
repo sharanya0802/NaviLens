@@ -1,6 +1,6 @@
 """
-detection.py — YOLOv8 Object Detector
-Uses Ultralytics YOLOv8 (latest). Auto-downloads model weights on first run.
+detection.py — YOLOv10 Object Detector
+Uses Ultralytics YOLOv10 (NMS-free). Auto-downloads model weights on first run.
 """
 
 from dataclasses import dataclass
@@ -26,6 +26,11 @@ class Detection:
     center_y: int       # bbox center Y
     area_ratio: float   # fraction of frame area (proxy for proximity)
 
+    @property
+    def is_person(self) -> bool:
+        """True if this detection is a person."""
+        return self.label == "person"
+
 
 # Objects that are navigation-critical get priority
 PRIORITY_CLASSES = {
@@ -34,27 +39,34 @@ PRIORITY_CLASSES = {
     "couch", "dining table", "dog", "cat", "fire hydrant"
 }
 
-# COCO classes that are irrelevant to navigation (suppress)
-IGNORE_CLASSES = {
-    "tv", "laptop", "mouse", "remote", "keyboard", "cell phone",
+# COCO classes considered as identifiable objects (OCR + smart ID)
+OBJECT_CLASSES = {
+    "bottle", "cup", "bowl", "banana", "apple", "sandwich", "orange",
+    "broccoli", "carrot", "hot dog", "pizza", "donut", "cake",
     "book", "clock", "vase", "scissors", "teddy bear", "hair drier",
-    "toothbrush", "spoon", "fork", "knife", "wine glass", "cup"
+    "toothbrush", "spoon", "fork", "knife", "wine glass", "cell phone",
+    "laptop", "mouse", "remote", "keyboard", "tv", "microwave", "oven",
+    "toaster", "sink", "refrigerator", "handbag", "suitcase", "umbrella",
+    "backpack", "tie", "sports ball", "frisbee", "skis", "snowboard",
+    "kite", "baseball bat", "baseball glove", "skateboard", "surfboard",
+    "tennis racket",
 }
 
 
 class ObjectDetector:
     """
-    Wraps YOLOv8 for NaviLens.
+    Wraps YOLOv10 for NaviLens.
     
     Model options (auto-downloaded):
-        yolov8n.pt  — nano  (fastest,  ~3.2M  params) ← recommended for RPi
-        yolov8s.pt  — small (~11M  params)
-        yolov8m.pt  — medium
-        yolov8l.pt  — large
-        yolov8x.pt  — xlarge (most accurate, slowest)
+        yolov10n.pt — nano   (fastest,  ~2.3M params) ← recommended for RPi
+        yolov10s.pt — small  (~7.2M  params)
+        yolov10m.pt — medium (~15.4M params)
+        yolov10b.pt — balanced (~19.1M params)
+        yolov10l.pt — large  (~24.4M params)
+        yolov10x.pt — xlarge (~29.5M params, most accurate)
     """
 
-    def __init__(self, model_name: str = "yolov8n.pt", conf: float = 0.45):
+    def __init__(self, model_name: str = "yolov10s.pt", conf: float = 0.45):
         self.model = YOLO(model_name)
         self.conf = conf
         self._frame_area: int = 1  # updated once frame size is known
@@ -88,8 +100,6 @@ class ObjectDetector:
 
         for box in results.boxes:
             label = self.model.names[int(box.cls)]
-            if label in IGNORE_CLASSES:
-                continue
 
             conf = float(box.conf)
             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())

@@ -5,7 +5,7 @@ Maps raw detections → directional zone (left/center/right) + proximity (near/f
 """
 
 from typing import List, Optional
-from detection import Detection, PRIORITY_CLASSES
+from detection import Detection, PRIORITY_CLASSES, OBJECT_CLASSES
 
 
 # ── Zone thresholds (fraction of frame width) ────────────────────────────────
@@ -76,14 +76,21 @@ class SpatialReasoner:
     def generate_navigation_instruction(self, detections: List[Detection]) -> str:
         """
         Generates a concise navigation-oriented instruction from the current scene.
-        Focuses on the most relevant objects only.
+        Only includes directional info for persons and navigation-critical objects.
+        Identifiable objects (products) are skipped here — handled by SmartIdentifier.
         """
         if not detections:
             return "Path appears clear."
 
+        # Filter to only navigation-relevant detections (persons, vehicles, etc.)
+        nav_dets = [d for d in detections if d.label not in OBJECT_CLASSES]
+
+        if not nav_dets:
+            return ""
+
         # Bucket by zone
         zones = {"left": [], "center": [], "right": []}
-        for det in detections:
+        for det in nav_dets:
             zones[self._zone(det)].append(det)
 
         parts = []
@@ -107,29 +114,42 @@ class SpatialReasoner:
                 if prox in ("very near", "near"):
                     parts.append(f"{top.label} on your {side}, {prox}.")
 
-        return " ".join(parts) if parts else "Path appears clear."
+        return " ".join(parts) if parts else ""
 
     def generate_full_description(self, detections: List[Detection]) -> str:
         """
         Generates a fuller scene description for 'describe surroundings' command.
+        Persons/navigation objects get directional info, identifiable objects just get named.
         """
         if not detections:
             return "I cannot detect any objects around you."
 
-        zones = {"left": [], "center": [], "right": []}
-        for det in detections:
-            zones[self._zone(det)].append(det)
+        # Separate navigation objects from identifiable objects
+        nav_dets = [d for d in detections if d.label not in OBJECT_CLASSES]
+        obj_dets = [d for d in detections if d.label in OBJECT_CLASSES]
 
         parts = []
-        for zone, items in zones.items():
-            if not items:
-                continue
-            # Describe up to 3 per zone
-            items_sorted = sorted(items, key=lambda d: -d.area_ratio)[:3]
-            labels = ", ".join(
-                f"{d.label} ({self._proximity(d)})" for d in items_sorted
+
+        # Navigation objects with spatial info
+        if nav_dets:
+            zones = {"left": [], "center": [], "right": []}
+            for det in nav_dets:
+                zones[self._zone(det)].append(det)
+            for zone, items in zones.items():
+                if not items:
+                    continue
+                items_sorted = sorted(items, key=lambda d: -d.area_ratio)[:3]
+                labels = ", ".join(
+                    f"{d.label} ({self._proximity(d)})" for d in items_sorted
+                )
+                parts.append(f"On your {zone}: {labels}.")
+
+        # Identifiable objects — just list them without direction
+        if obj_dets:
+            obj_labels = ", ".join(
+                d.label for d in sorted(obj_dets, key=lambda d: -d.area_ratio)[:5]
             )
-            parts.append(f"On your {zone}: {labels}.")
+            parts.append(f"I also see: {obj_labels}.")
 
         count = len(detections)
         header = f"I can see {count} object{'s' if count != 1 else ''}. "
