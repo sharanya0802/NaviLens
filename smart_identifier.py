@@ -46,7 +46,7 @@ class SmartIdentifier:
 
     def _init_gemini(self):
         try:
-            from google import genai
+            from google import genai  # pyrefly: ignore [missing-import]
             self._client = genai.Client(api_key=self._api_key)
             self._gemini_available = True
             print("[SmartID] Gemini available for on-demand identification.")
@@ -137,7 +137,7 @@ class SmartIdentifier:
 
         try:
             response = self._client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-2.0-flash",
                 contents=[image_part, prompt],
             )
             name, price = self._parse_gemini_response(response.text)

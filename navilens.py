@@ -12,6 +12,7 @@ Navigation pipeline is FULLY LOCAL.
 
 import threading
 import time
+# pyrefly: ignore [missing-import]
 import cv2
 from tts_engine import TTSEngine
 from voice_input import WhisperListener
@@ -50,6 +51,7 @@ class NaviLens:
         self.voice = WhisperListener(
             question_callback=self._on_question,
             nav_callback=self._on_nav_command,
+            exit_callback=self._on_exit_command,
             stop_callback=self._on_stop,
             stop_nav_callback=self._on_stop_nav,
             whisper_model=whisper_model,
@@ -76,7 +78,7 @@ class NaviLens:
             from google import genai
             self._gemini_client = genai.Client(api_key=api_key)
             self._gemini_available = True
-            print("[NaviLens] Gemini 2.5 Flash connected.")
+            print("[NaviLens] Gemini 2.0 Flash connected.")
         except ImportError:
             print("[NaviLens] google-genai not installed. Run: pip install google-genai")
         except Exception as e:
@@ -153,7 +155,7 @@ class NaviLens:
 
             print(f"[Gemini] Asking: '{question}'")
             response = self._gemini_client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-2.0-flash",
                 contents=[image_part, prompt],
             )
 
@@ -177,25 +179,66 @@ class NaviLens:
     #  PIPELINE 2: LOCAL NAVIGATION  (depth + YOLO, fully local)
     # ══════════════════════════════════════════════════════════════════
     def _on_nav_command(self, text: str):
-        """Called when Whisper routes a navigation command."""
+        """Called when Whisper routes a general navigation command."""
         with self._nav_lock:
             if self._nav_active:
                 # Already navigating — treat as status request
                 self.tts.speak("Navigation is active. Say stop navigation to exit.", priority=True)
                 return
 
-        self._start_navigation()
+        self._start_navigation(exit_mode=False)
 
-    def _start_navigation(self):
-        """Activate continuous local navigation mode."""
+    def _on_exit_command(self, text: str):
+        """Called when the user says 'find the exit' / 'help me leave the room'."""
+        with self._nav_lock:
+            nav_on = self._nav_active
+
+        if nav_on and self._exit_mode:
+            self.tts.speak(
+                "Already looking for the exit. I'll let you know when I find it.",
+                priority=True,
+            )
+            return
+
+        if nav_on and not self._exit_mode:
+            # Switch from standard nav to exit mode without restarting the loop
+            self._exit_mode = True
+            self._nav.start_exit_mode()
+            self.tts.speak(
+                "Switching to exit mode. I'll guide you to the nearest door.",
+                priority=True,
+            )
+            return
+
+        # Start fresh in exit mode
+        self._start_navigation(exit_mode=True)
+
+    def _start_navigation(self, exit_mode: bool = False):
+        """Activate continuous local navigation mode (standard or exit-seeking)."""
         with self._nav_lock:
             if self._nav_active:
                 return
             self._nav_active = True
 
+        self._exit_mode = exit_mode
         self._nav.reset_state()
-        print("[Nav] ═══ Navigation mode ACTIVATED ═══")
-        self.tts.speak("Navigation mode activated. I'll guide you.", priority=True)
+
+        if exit_mode:
+            self._nav.start_exit_mode()
+            print("[Nav] ═══ Exit-seeking mode ACTIVATED ═══")
+            self.tts.speak(
+                "Exit mode activated. "
+                "I'll find the nearest door and guide you out. "
+                "Please look around slowly if I ask you to scan.",
+                priority=True,
+            )
+        else:
+            print("[Nav] ═══ Navigation mode ACTIVATED ═══")
+            self.tts.speak(
+                "Navigation mode activated. "
+                "I'll give you turn-by-turn directions based on free space ahead.",
+                priority=True,
+            )
 
         self._nav_thread = threading.Thread(
             target=self._nav_loop,
@@ -204,12 +247,13 @@ class NaviLens:
         self._nav_thread.start()
 
     def _stop_navigation(self):
-        """Deactivate navigation mode."""
+        """Deactivate navigation mode (both standard and exit)."""
         with self._nav_lock:
             if not self._nav_active:
                 return
             self._nav_active = False
 
+        self._exit_mode = False
         print("[Nav] ═══ Navigation mode DEACTIVATED ═══")
         self.tts.speak("Navigation stopped.", priority=True)
 
@@ -282,7 +326,9 @@ class NaviLens:
         self.voice.start()
         self.running = True
         self.tts.speak(
-            "NaviLens ready. Ask me a question, or say navigate me to start navigation.",
+            "NaviLens ready. "
+            "Ask me a question, say navigate me to start navigation, "
+            "or say find the exit to guide you out of the room.",
             priority=True,
         )
 
@@ -304,8 +350,12 @@ class NaviLens:
                         nav_on = self._nav_active
 
                     if nav_on:
-                        status = "NAVIGATING | Say 'stop navigation' to exit | Q to quit"
-                        color = (0, 200, 255)
+                        if self._exit_mode:
+                            status = "EXIT MODE | Say 'stop navigation' to cancel | Q to quit"
+                            color  = (255, 0, 255)
+                        else:
+                            status = "NAVIGATING | Say 'stop navigation' to exit | Q to quit"
+                            color  = (0, 200, 255)
                     elif self._processing:
                         status = "Thinking... | Q to quit"
                         color = (255, 200, 0)
@@ -319,16 +369,15 @@ class NaviLens:
                     )
                     cv2.imshow("NaviLens", display)
 
-                    # Show depth map in separate window when navigating
+                    # Guidance HUD (path + directions) when navigating
                     if nav_on:
                         with self._depth_vis_lock:
-                            dv = self._latest_depth_vis
-                        if dv is not None:
-                            cv2.imshow("NaviLens — Depth", dv)
+                            guide_vis = self._latest_depth_vis
+                        if guide_vis is not None:
+                            cv2.imshow("NaviLens — Guidance", guide_vis)
                     else:
-                        # Close depth window if not navigating
                         try:
-                            cv2.destroyWindow("NaviLens — Depth")
+                            cv2.destroyWindow("NaviLens — Guidance")
                         except cv2.error:
                             pass
 

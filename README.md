@@ -1,24 +1,55 @@
-# NaviLens 🦯
-### Voice Activated Visual Recognition and Audio Navigation for the Blind
+# NaviLens
 
+**Voice-activated visual assistant and spatial navigation for blind and low-vision users.**
 
----
-
-## Project Overview
-NaviLens is a wearable AI assistant that provides real-time audio navigation guidance to visually
-impaired users via a spectacle-mounted camera, microphone, and bone-conduction speaker.
+NaviLens runs on a wearable camera + microphone and speaks concise, actionable guidance — not object-detection labels. It combines monocular depth (MiDaS), room-level spatial mapping, radial path planning, and natural-language TTS.
 
 ---
 
-## File Structure
+## How it works
+
 ```
-navilens/
-├── main.py           ← Entry point (run this)
-├── navilens.py       ← Core orchestrator
-├── detection.py      ← YOLOv8 object detection
-├── spatial.py        ← Spatial reasoning engine (zones + proximity)
-├── tts_engine.py     ← Priority-based TTS (pyttsx3 / gTTS)
-├── voice_input.py    ← Voice command listener (Google STT)
+Camera frame
+    │
+    ├─► MiDaS depth ──► SpatialMap (walls, openings, room type)
+    │
+    ├─► YOLOv8 ───────► Obstacle semantics (chair, person, stairs…)
+    │
+    └─► PathPlanner ──► Best free-space heading (−45° … +45°)
+              │
+              ├─► GuidanceComposer ──► "Turn left along the corridor."
+              │
+              └─► ExitGuidance + DoorTracker (exit mode)
+                        └── "Door at your 2 o'clock, about 5 steps."
+```
+
+**Two pipelines (by voice intent):**
+
+| Mode | Backend | Example commands |
+|------|---------|------------------|
+| **Q&A** | Gemini 2.0 Flash | "What am I holding?", "Read this label" |
+| **Navigation** | 100% local (depth + YOLO) | "Navigate forward", "Guide me" |
+| **Exit** | Local + door/opening fusion | "Find the exit", "Help me leave the room" |
+
+Navigation never calls the cloud. Gemini is only used for semantic questions.
+
+---
+
+## File structure
+
+```
+NaviLens/
+├── main.py              ← Entry point
+├── navilens.py          ← Orchestrator (camera, voice routing, TTS)
+├── navigation.py        ← Full spatial nav pipeline + guidance HUD
+├── depth_engine.py      ← MiDaS monocular depth
+├── spatial_map.py       ← Walls, openings, room context (temporal)
+├── path_planner.py      ← Radial ray-cast path scoring
+├── guidance_composer.py ← Turn-by-turn speech state machine
+├── exit_detector.py     ← Door / opening tracker (clock-face bearing)
+├── exit_navigation.py   ← "Leave the room" narrator
+├── voice_input.py       ← Whisper + intent routing
+├── tts_engine.py        ← Priority speech queue
 └── requirements.txt
 ```
 
@@ -26,103 +57,97 @@ navilens/
 
 ## Setup
 
-### 1. Create a virtual environment (recommended)
 ```bash
 python -m venv venv
-source venv/bin/activate        # Linux/macOS
-venv\Scripts\activate           # Windows
-```
-
-### 2. Install dependencies
-```bash
+source venv/bin/activate   # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-> **Linux / Raspberry Pi extra step** (for PyAudio):
-> ```bash
-> sudo apt install portaudio19-dev python3-pyaudio
-> ```
+**Linux / Raspberry Pi** (PyAudio):
+
+```bash
+sudo apt install portaudio19-dev python3-pyaudio
+```
+
+Set Gemini key for Q&A (optional for navigation):
+
+```bash
+export GEMINI_API_KEY=your_key_here
+```
 
 ---
 
 ## Running
 
-### Basic (webcam, YOLOv8-nano, pyttsx3 TTS)
 ```bash
+# Webcam + local navigation (navigation works without Gemini)
 python main.py
-```
 
-### Use a larger, more accurate model
-```bash
-python main.py --model yolov8s.pt
-```
+# With Gemini Q&A
+python main.py --gemini-api-key YOUR_KEY
 
-### Use gTTS (better voice, needs internet)
-```bash
-python main.py --tts-engine gtts
-```
-
-### Test with a video file (no mic needed)
-```bash
-python main.py --source path/to/video.mp4 --no-voice-input
-```
-
-### All options
-```bash
-python main.py --help
+# Hide preview windows (audio-only)
+python main.py --no-show
 ```
 
 ---
 
-## Voice Commands (say these aloud)
-| What you say              | What it does                        |
-|---------------------------|-------------------------------------|
-| "What's ahead?"           | Describes objects in your path      |
-| "Describe surroundings"   | Full scene description (all zones)  |
-| "Help"                    | Lists available commands            |
-| "Stop"                    | Shuts down NaviLens                 |
+## Voice commands
+
+| Say | Action |
+|-----|--------|
+| "Navigate me forward" / "Guide me" | Start turn-by-turn navigation |
+| "Find the exit" / "Help me leave the room" | Exit mode — door + depth openings |
+| "Stop navigation" | End navigation only |
+| "What is this?" / "Read the label" | Gemini visual Q&A |
+| "Stop" | Quit application |
 
 ---
 
-## Spatial Zone System
-```
-┌──────────────────────────────┐
-│  LEFT  │    CENTER   │ RIGHT │
-│ 0–38%  │   38–62%   │ 62–100│  (frame width %)
-└──────────────────────────────┘
+## What you hear (examples)
 
-Proximity (by bounding box area):
-  > 15% of frame → VERY NEAR (Stop!)
-  > 7%  of frame → NEAR (Caution)
-  > 2%  of frame → FAR (Awareness)
-  ≤ 2%  of frame → DISTANT
-```
+**Corridor:** "You're in a corridor. Continue straight along the corridor."
+
+**Obstacle:** "Veer left through the open space. Watch out, chair on your right."
+
+**Blocked:** "Dead end ahead. Turn to your left where there's open space."
+
+**Exit:** "Exit found! The door is straight ahead, at your 12 o'clock. About 4 steps away. Continue straight towards the exit."
 
 ---
 
-## Hardware Integration (Phase 5)
-When ready to deploy on Raspberry Pi:
-1. Change `--source 0` to the Pi camera index (usually `0`)
-2. For Pi Camera Module v3: use `libcamera` or `picamera2` and pipe frames into OpenCV
-3. PyAudio will use the USB mic automatically if it's the only audio device
-4. Bone-conduction speaker connects via 3.5mm or Bluetooth (pyttsx3 uses system audio)
-5. Use `--model yolov8n.pt` (nano) for best performance on Pi 4
+## Guidance window (for testers / caregivers)
+
+When navigation is active, a second window **NaviLens — Guidance** shows:
+
+- Planned path rays (green = best route)
+- Compass needle (STRAIGHT / VEER LEFT / TURN RIGHT)
+- Wall bars, detected openings, YOLO obstacles
+- Live guidance text banner
+
+This is a debug/verification view; blind users rely on **audio only**.
 
 ---
 
-## Model Performance Reference
-| Model       | Size   | Speed (RPi 4) | mAP50-95 |
-|-------------|--------|---------------|----------|
-| yolov8n.pt  | 6 MB   | ~8–12 FPS     | 37.3     |
-| yolov8s.pt  | 22 MB  | ~4–6 FPS      | 44.9     |
-| yolov8m.pt  | 52 MB  | ~2–3 FPS      | 50.2     |
+## Hardware notes (Raspberry Pi / glasses)
 
-> Weights are auto-downloaded on first run from Ultralytics servers.
+- Use `yolov8n.pt` on Pi 4 for ~8–12 FPS depth+detect
+- Camera index: `python main.py --source 0`
+- Bone-conduction speaker via system audio (pyttsx3) or `--tts-engine gtts`
 
 ---
 
-## Future Additions
-- [ ] Google Gemini 2.0 Flash integration for richer scene descriptions
-- [ ] FastAPI dashboard for remote monitoring
-- [ ] Whisper STT (offline alternative to Google STT)
-- [ ] Edge-optimized model via TensorRT / ONNX export for faster Pi inference
+## ML stack
+
+| Component | Model | Role |
+|-----------|-------|------|
+| Depth | MiDaS small | Free space, walls, openings |
+| Detection | YOLOv8n | Semantic obstacles, doors |
+| Speech | Whisper base | Voice commands (local) |
+| Q&A | Gemini 2.0 Flash | Visual questions only |
+
+---
+
+## Team
+
+RV College of Engineering — Team UH38

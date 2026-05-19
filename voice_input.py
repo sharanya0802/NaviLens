@@ -1,11 +1,12 @@
 """
 voice_input.py — Whisper-based always-on voice listener with intent routing.
 
-Routes user speech to either:
+Routes user speech to one of:
   1. Gemini Q&A pipeline (semantic/visual questions)
   2. Local navigation pipeline (spatial/movement commands)
+  3. Exit-seeking pipeline ("find the exit" / "help me leave")
 
-Default → Gemini, unless navigation keywords are explicitly present.
+Default → Gemini, unless navigation/exit keywords are explicitly present.
 """
 
 import threading
@@ -22,9 +23,18 @@ NAV_KEYWORDS = {
 
 NAV_PHRASES = [
     "navigate me", "guide me", "help me walk", "start navigation",
-    "take me to", "lead me to", "where is the exit", "where is the door",
+    "take me to", "lead me to",
     "can i walk", "is the path", "any obstacle", "which way",
     "where should i go", "where do i go", "how do i get",
+]
+
+EXIT_PHRASES = [
+    "find the exit", "find exit", "find the door", "find a door",
+    "help me leave", "help me get out", "guide me out",
+    "take me outside", "where is the exit", "where is the door",
+    "where's the exit", "where's the door", "leave the room",
+    "get out of here", "exit the room", "how do i leave",
+    "i want to leave", "i need to leave", "way out",
 ]
 
 STOP_NAV_PHRASES = [
@@ -40,6 +50,7 @@ def classify_intent(text: str) -> str:
     Classify user speech into one of:
       'stop'       — shutdown the app
       'stop_nav'   — stop navigation mode only
+      'find_exit'  — activate exit-seeking mode
       'navigate'   — activate/continue local navigation
       'question'   — send to Gemini (default)
     """
@@ -53,6 +64,11 @@ def classify_intent(text: str) -> str:
     for phrase in STOP_NAV_PHRASES:
         if phrase in t:
             return "stop_nav"
+
+    # Check for exit-seeking phrases (before general nav)
+    for phrase in EXIT_PHRASES:
+        if phrase in t:
+            return "find_exit"
 
     # Check for navigation phrases (multi-word, higher priority)
     for phrase in NAV_PHRASES:
@@ -83,12 +99,14 @@ class WhisperListener:
         self,
         question_callback: Callable[[str], None],
         nav_callback: Callable[[str], None],
+        exit_callback: Callable[[str], None],
         stop_callback: Callable[[], None],
         stop_nav_callback: Callable[[], None],
         whisper_model: str = "base",
     ):
         self._question_cb = question_callback
         self._nav_cb = nav_callback
+        self._exit_cb = exit_callback
         self._stop_cb = stop_callback
         self._stop_nav_cb = stop_nav_callback
         self._whisper_model_name = whisper_model
@@ -178,6 +196,8 @@ class WhisperListener:
                         self._stop_cb()
                     elif intent == "stop_nav":
                         self._stop_nav_cb()
+                    elif intent == "find_exit":
+                        self._exit_cb(text)
                     elif intent == "navigate":
                         self._nav_cb(text)
                     else:

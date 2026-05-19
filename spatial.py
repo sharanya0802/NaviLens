@@ -9,10 +9,9 @@ from detection import Detection, PRIORITY_CLASSES, OBJECT_CLASSES
 
 
 # ── Zone thresholds (fraction of frame width) ────────────────────────────────
-LEFT_ZONE_MAX   = 0.38   # 0.0 – 0.38  → left
-CENTER_ZONE_MIN = 0.38
-CENTER_ZONE_MAX = 0.62   # 0.38 – 0.62 → center
-RIGHT_ZONE_MIN  = 0.62   # 0.62 – 1.0  → right
+# Using 5 sectors for better precision
+SECTOR_NAMES = ["Hard Left", "Soft Left", "Center", "Soft Right", "Hard Right"]
+SECTOR_EDGES = [0.20, 0.40, 0.60, 0.80]
 
 # ── Proximity thresholds (fraction of frame area) ────────────────────────────
 VERY_NEAR_THRESHOLD = 0.15   # > 15 % of frame → very near / stop
@@ -32,11 +31,10 @@ class SpatialReasoner:
     # ── Zone classification ───────────────────────────────────────────────────
     def _zone(self, det: Detection) -> str:
         rel_x = det.center_x / self._frame_w
-        if rel_x < LEFT_ZONE_MAX:
-            return "left"
-        elif rel_x > RIGHT_ZONE_MIN:
-            return "right"
-        return "center"
+        for i, edge in enumerate(SECTOR_EDGES):
+            if rel_x < edge:
+                return SECTOR_NAMES[i]
+        return SECTOR_NAMES[-1]
 
     def _proximity(self, det: Detection) -> str:
         r = det.area_ratio
@@ -89,24 +87,30 @@ class SpatialReasoner:
             return ""
 
         # Bucket by zone
-        zones = {"left": [], "center": [], "right": []}
+        zones = {name: [] for name in SECTOR_NAMES}
         for det in nav_dets:
             zones[self._zone(det)].append(det)
 
         parts = []
 
         # ── Center path warnings are highest priority ──────────────────────
-        center = sorted(zones["center"], key=lambda d: -d.area_ratio)
-        if center:
-            top = center[0]
+        center_keys = ["Soft Left", "Center", "Soft Right"]
+        center_dets = []
+        for k in center_keys:
+            center_dets.extend(zones[k])
+        
+        center_dets = sorted(center_dets, key=lambda d: -d.area_ratio)
+        if center_dets:
+            top = center_dets[0]
             prox = self._proximity(top)
+            zone = self._zone(top)
             if prox in ("very near", "near"):
-                parts.append(f"{top.label} blocking center path, {prox}.")
+                parts.append(f"{top.label} blocking {zone} path, {prox}.")
             else:
-                parts.append(f"{top.label} ahead, {prox}.")
+                parts.append(f"{top.label} {zone}, {prox}.")
 
         # ── Side awareness ─────────────────────────────────────────────────
-        for side in ("left", "right"):
+        for side in ["Hard Left", "Hard Right"]:
             items = sorted(zones[side], key=lambda d: -d.area_ratio)
             if items:
                 top = items[0]
@@ -132,7 +136,7 @@ class SpatialReasoner:
 
         # Navigation objects with spatial info
         if nav_dets:
-            zones = {"left": [], "center": [], "right": []}
+            zones = {name: [] for name in SECTOR_NAMES}
             for det in nav_dets:
                 zones[self._zone(det)].append(det)
             for zone, items in zones.items():
@@ -142,7 +146,7 @@ class SpatialReasoner:
                 labels = ", ".join(
                     f"{d.label} ({self._proximity(d)})" for d in items_sorted
                 )
-                parts.append(f"On your {zone}: {labels}.")
+                parts.append(f"At your {zone}: {labels}.")
 
         # Identifiable objects — just list them without direction
         if obj_dets:
