@@ -85,14 +85,21 @@ export GEMINI_API_KEY=your_key_here
 ## Running
 
 ```bash
-# Webcam + local navigation (navigation works without Gemini)
+# Recommended on Mac/laptop (better depth + detection)
 python main.py
 
-# With Gemini Q&A
-python main.py --gemini-api-key YOUR_KEY
+# Lighter for Raspberry Pi
+python main.py --depth small --yolo-model yolov8n.pt
 
-# Hide preview windows (audio-only)
-python main.py --no-show
+# Product labels with Gemini
+export GEMINI_API_KEY=your_key
+python main.py
+
+# Best TTS on Mac (default auto = built-in `say`)
+python main.py --tts-engine say
+
+# Neural voice (needs internet)
+pip install edge-tts && python main.py --tts-engine edge
 ```
 
 ---
@@ -106,6 +113,9 @@ python main.py --no-show
 | "Stop navigation" | End navigation only |
 | "What is this?" / "Read the label" | Gemini product ID (CLIP if no key) |
 | "What's ahead?" / "Describe surroundings" | Local YOLO + spatial |
+| "Help" | List voice commands |
+| "Repeat" / "Say again" | Repeat last spoken message |
+| "Pause navigation" / "Resume navigation" | Pause / resume guidance |
 | "Stop" | Quit application |
 
 ---
@@ -145,13 +155,16 @@ This is a debug/verification view; blind users rely on **audio only**.
 
 ## ML stack
 
-| Component | Model | Role |
-|-----------|-------|------|
-| Depth | MiDaS small | Free space, walls, openings |
-| Detection | YOLOv8n | Semantic obstacles, doors |
-| Speech | Whisper base | Voice commands (local) |
-| Product ID | Gemini 2.0 Flash (+ CLIP/OCR fallback) | Labels, brands, prices only |
-| Scene | YOLOv8n + spatial | Surroundings, obstacles ahead |
+| Component | Default model | Role |
+|-----------|---------------|------|
+| Depth | **DPT_Hybrid** (`--depth hybrid`) | Free space, walls, openings |
+| Detection | **YOLOv8s** (`--yolo-model yolov8s.pt`) | Obstacles, doors, products |
+| Speech | Whisper **small** | Voice commands (local) |
+| TTS | macOS **`say`** / pyttsx3 (`--tts-engine auto`) | Spoken guidance |
+| Product ID | Gemini 2.0 Flash (+ CLIP/OCR) | Labels, brands, prices only |
+| Hazard watch | YOLO + proximity | Idle-mode safety alerts |
+
+**Lighter / faster (Pi):** `python main.py --depth small --yolo-model yolov8n.pt --whisper-model base`
 
 ---
 

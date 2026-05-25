@@ -55,6 +55,16 @@ STOP_NAV_PHRASES = [
     "cancel navigation", "stop guiding",
 ]
 
+PAUSE_NAV_PHRASES = ["pause navigation", "pause guiding", "wait", "hold on"]
+RESUME_NAV_PHRASES = ["resume navigation", "continue navigation", "keep guiding", "resume guiding"]
+
+REPEAT_PHRASES = [
+    "repeat", "say again", "repeat that", "what did you say",
+    "say that again", "repeat last",
+]
+
+HELP_PHRASES = ["help", "what can you do", "commands", "how do i use"]
+
 STOP_WORDS = {"stop", "quit", "shut down", "shutdown", "turn off"}
 
 PRODUCT_WORDS = {
@@ -78,6 +88,22 @@ def classify_intent(text: str) -> str:
 
     if t in STOP_WORDS:
         return "stop"
+
+    for phrase in HELP_PHRASES:
+        if t == phrase or t.startswith(phrase):
+            return "help"
+
+    for phrase in REPEAT_PHRASES:
+        if phrase in t:
+            return "repeat"
+
+    for phrase in PAUSE_NAV_PHRASES:
+        if phrase in t:
+            return "pause_nav"
+
+    for phrase in RESUME_NAV_PHRASES:
+        if phrase in t:
+            return "resume_nav"
 
     for phrase in STOP_NAV_PHRASES:
         if phrase in t:
@@ -130,6 +156,10 @@ class WhisperListener:
         exit_callback: Callable[[str], None],
         scene_callback: Callable[[str], None],
         product_callback: Callable[[str], None],
+        help_callback: Callable[[], None],
+        repeat_callback: Callable[[], None],
+        pause_nav_callback: Callable[[], None],
+        resume_nav_callback: Callable[[], None],
         stop_callback: Callable[[], None],
         stop_nav_callback: Callable[[], None],
         whisper_model: str = "base",
@@ -138,6 +168,10 @@ class WhisperListener:
         self._exit_cb = exit_callback
         self._scene_cb = scene_callback
         self._product_cb = product_callback
+        self._help_cb = help_callback
+        self._repeat_cb = repeat_callback
+        self._pause_nav_cb = pause_nav_callback
+        self._resume_nav_cb = resume_nav_callback
         self._stop_cb = stop_callback
         self._stop_nav_cb = stop_nav_callback
         self._whisper_model_name = whisper_model
@@ -223,6 +257,14 @@ class WhisperListener:
 
                     if intent == "stop":
                         self._stop_cb()
+                    elif intent == "help":
+                        self._help_cb()
+                    elif intent == "repeat":
+                        self._repeat_cb()
+                    elif intent == "pause_nav":
+                        self._pause_nav_cb()
+                    elif intent == "resume_nav":
+                        self._resume_nav_cb()
                     elif intent == "stop_nav":
                         self._stop_nav_cb()
                     elif intent == "find_exit":

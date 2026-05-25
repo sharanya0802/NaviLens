@@ -18,6 +18,7 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 
+from config import YOLO_MODEL
 from depth_engine import DepthEngine
 from exit_detector import DoorTracker
 from exit_navigation import ExitGuidance
@@ -71,8 +72,8 @@ class NavigationEngine:
             return
         try:
             from ultralytics import YOLO
-            self._detector = YOLO("yolov8n.pt")
-            print("[Nav] YOLOv8n loaded.")
+            self._detector = YOLO(YOLO_MODEL)
+            print(f"[Nav] YOLO loaded: {YOLO_MODEL}")
         except Exception as e:
             print(f"[Nav] YOLO failed: {e}")
             self._detector = None

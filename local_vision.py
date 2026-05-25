@@ -11,10 +11,10 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 
+from config import YOLO_MODEL
 from detection import Detection, OBJECT_CLASSES, ObjectDetector
 from spatial import SpatialReasoner
 
-# Share one detector instance across scene + product crops
 _detector: Optional[ObjectDetector] = None
 _spatial = SpatialReasoner()
 
@@ -22,8 +22,9 @@ _spatial = SpatialReasoner()
 def _get_detector() -> ObjectDetector:
     global _detector
     if _detector is None:
-        # Same family as navigation; nano keeps latency low on-device
-        _detector = ObjectDetector(model_name="yolov8n.pt", conf=0.40)
+        self_conf = 0.38 if "n.pt" in YOLO_MODEL else 0.42
+        _detector = ObjectDetector(model_name=YOLO_MODEL, conf=self_conf)
+        print(f"[Vision] YOLO loaded: {YOLO_MODEL}")
     return _detector
 
 

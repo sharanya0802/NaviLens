@@ -9,9 +9,10 @@ pyaudio>=0.2.14             # Microphone access
 faster-whisper>=1.0.0       # CTranslate2-based Whisper (fast local STT)
 
 # ── Text-to-Speech ────────────────────────────────────────────────────────────
-pyttsx3>=2.90               # Offline TTS
-gTTS>=2.5.1                 # Online Google TTS (optional)
-pygame>=2.6.0               # Audio playback for gTTS
+pyttsx3>=2.90               # Offline TTS fallback
+edge-tts>=6.1.0             # Optional: neural voice (pip + --tts-engine edge)
+gTTS>=2.5.1                 # Optional online TTS
+pygame>=2.6.0               # Audio playback for gTTS / edge
 
 # ── Product identification (Gemini — products/labels only, not navigation) ───
 google-genai>=1.0.0         # Gemini Vision for brand/price on packages

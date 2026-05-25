@@ -1,71 +1,83 @@
 """
 NaviLens - Voice-Activated Visual Assistant + Navigation
-Main entry point. Run with: python main.py
-Optional: --gemini-api-key for product/label identification only.
 """
 
 import argparse
 import os
-from navilens import NaviLens
+import sys
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
         description="NaviLens: Local navigation + Gemini product ID"
     )
-    parser.add_argument(
-        "--source", type=str, default="0",
-        help="Video source: 0 for webcam (default: 0)",
-    )
+    parser.add_argument("--source", type=str, default="0", help="Webcam index or video path")
     parser.add_argument(
         "--gemini-api-key", type=str, default=None,
-        help="Gemini API key for product/label ID only (or GEMINI_API_KEY env)",
+        help="Gemini key for products/labels only (or GEMINI_API_KEY)",
     )
     parser.add_argument(
-        "--whisper-model", type=str, default="base",
+        "--whisper-model", type=str, default=None,
         choices=["tiny", "base", "small", "medium"],
-        help="Whisper model size (default: base)",
+        help="Whisper STT size (default: small)",
     )
     parser.add_argument(
-        "--tts-engine", type=str, default="pyttsx3",
-        choices=["pyttsx3", "gtts"],
-        help="TTS engine (default: pyttsx3)",
+        "--depth", type=str, default=None,
+        choices=["small", "hybrid", "large"],
+        help="Depth: small=fast, hybrid=recommended, large=best",
     )
     parser.add_argument(
-        "--no-show", action="store_true", default=False,
-        help="Hide camera window",
+        "--yolo-model", type=str, default=None,
+        help="YOLO weights, e.g. yolov8s.pt",
     )
+    parser.add_argument(
+        "--tts-engine", type=str, default=None,
+        choices=["auto", "say", "pyttsx3", "edge", "gtts"],
+        help="TTS: auto uses macOS `say` on Mac (most reliable)",
+    )
+    parser.add_argument("--no-show", action="store_true", help="Hide camera windows")
+    parser.add_argument("--no-hazard-watch", action="store_true", help="Disable idle alerts")
     return parser.parse_args()
+
+
+def _apply_env(args):
+    if args.depth:
+        os.environ["NAVILENS_DEPTH"] = args.depth
+    if args.yolo_model:
+        os.environ["NAVILENS_YOLO"] = args.yolo_model
+    if args.whisper_model:
+        os.environ["NAVILENS_WHISPER"] = args.whisper_model
+    if args.tts_engine:
+        os.environ["NAVILENS_TTS"] = args.tts_engine
+    if args.no_hazard_watch:
+        os.environ["NAVILENS_HAZARD_WATCH"] = "0"
 
 
 if __name__ == "__main__":
     args = parse_args()
+    _apply_env(args)
+
+    # Import after env so config.py picks up overrides
+    import importlib
+    import config as cfg
+    importlib.reload(cfg)
+
+    from navilens import NaviLens
+
     gemini_key = args.gemini_api_key or os.environ.get("GEMINI_API_KEY")
 
     print("=" * 60)
-    print("  NaviLens — Local Navigation + Product Vision")
-    print("  RV College of Engineering | Team UH38")
+    print("  NaviLens")
     print("=" * 60)
-    print(f"  Source   : {args.source}")
-    print(f"  Whisper  : {args.whisper_model}")
-    print(f"  TTS      : {args.tts_engine}")
-    print(f"  Gemini   : {'ON (products only)' if gemini_key else 'OFF (CLIP fallback)'}")
+    print(f"  Depth    : {cfg.DEPTH_PROFILE}")
+    print(f"  YOLO     : {cfg.YOLO_MODEL}")
+    print(f"  Whisper  : {cfg.WHISPER_MODEL}")
+    print(f"  TTS      : {cfg.TTS_ENGINE}")
+    print(f"  Gemini   : {'ON (products)' if gemini_key else 'OFF'}")
+    print(f"  Hazard   : {'ON' if cfg.HAZARD_WATCH_ENABLED else 'OFF'}")
     print("=" * 60)
-    print("  LOCAL (no API):")
-    print("    Navigation — 'Navigate me' / 'Find the exit'")
-    print("    Scene      — 'What's ahead?' / 'Describe surroundings'")
-    print()
-    print("  GEMINI (products only):")
-    print("    'What is this?' / 'Read this label' / 'What brand is this?'")
-    print()
-    print("  Say 'stop navigation' or 'stop' to quit.")
-    print("=" * 60 + "\n")
-
-    if not gemini_key:
-        print(
-            "Note: No Gemini key — product ID uses local CLIP+OCR only.\n"
-            "      Set GEMINI_API_KEY for brand names and prices on packages.\n"
-        )
+    print("  TTS tip: On Mac, default is `say` — you should hear an audio test at startup.")
+    print("=" * 60)
 
     app = NaviLens(
         source=args.source,
