@@ -1,19 +1,28 @@
 """
 navilens.py — Core Orchestrator (Dual Pipeline)
 
-Two co-existing pipelines:
-  1. GEMINI Q&A   — Semantic/visual questions → frame + question → Gemini → TTS
-  2. LOCAL NAV    — Navigation commands → MiDaS depth + YOLO → event-based TTS
+  1. LOCAL NAVIGATION  — MiDaS depth + spatial map + path planner → TTS
+  2. LOCAL SCENE       — YOLO + spatial reasoning → TTS (what's ahead, describe)
+  3. PRODUCT ID (API)  — YOLO crop + OCR + Gemini Vision → TTS (labels, brands, prices)
 
-Routing is keyword-based (see voice_input.py).
-Gemini pipeline is NEVER used for navigation decisions.
-Navigation pipeline is FULLY LOCAL.
+Navigation and scene description never call Gemini.
+Gemini is only used when the user asks to identify a product / read a label.
 """
 
 import threading
 import time
-# pyrefly: ignore [missing-import]
+
 import cv2
+
+from local_vision import (
+    describe_ahead,
+    describe_scene,
+    detect_objects,
+    get_product_crop,
+    set_frame_size as set_vision_frame_size,
+)
+from ocr_engine import OCREngine
+from smart_identifier import SmartIdentifier
 from tts_engine import TTSEngine
 from voice_input import WhisperListener
 from navigation import NavigationEngine
@@ -32,75 +41,101 @@ class NaviLens:
         self.show_window = show_window
         self.running = False
 
-        # ── TTS ──────────────────────────────────────────────────────
         print("[NaviLens] Initialising TTS engine...")
         self.tts = TTSEngine(engine=tts_engine)
 
-        # ── Gemini (unchanged) ───────────────────────────────────────
-        self._gemini_client = None
-        self._gemini_available = False
-        if gemini_api_key:
-            self._init_gemini(gemini_api_key)
-
-        # ── Navigation engine (local) ────────────────────────────────
-        print("[NaviLens] Initialising navigation engine...")
+        print("[NaviLens] Initialising local navigation engine...")
         self._nav = NavigationEngine()
 
-        # ── Whisper listener (with routing) ──────────────────────────
+        print("[NaviLens] Initialising local vision (scene + product crop)...")
+        self._ocr = OCREngine()
+        self._smart_id = SmartIdentifier(api_key=gemini_api_key)
+        self._gemini_products = self._smart_id._gemini_available
+
         print("[NaviLens] Initialising Whisper voice listener...")
         self.voice = WhisperListener(
-            question_callback=self._on_question,
             nav_callback=self._on_nav_command,
             exit_callback=self._on_exit_command,
+            scene_callback=self._on_scene_query,
+            product_callback=self._on_identify_product,
             stop_callback=self._on_stop,
             stop_nav_callback=self._on_stop_nav,
             whisper_model=whisper_model,
         )
 
-        # ── Frame state ──────────────────────────────────────────────
         self._frame_lock = threading.Lock()
         self._latest_frame = None
 
-        # ── Gemini processing guard ──────────────────────────────────
         self._processing = False
         self._processing_lock = threading.Lock()
 
-        # ── Navigation mode state ────────────────────────────────────
         self._nav_active = False
         self._nav_lock = threading.Lock()
         self._nav_thread = None
-        self._nav_interval = 0.5    # seconds between nav analysis frames
+        self._nav_interval = 0.5
         self._latest_depth_vis = None
         self._depth_vis_lock = threading.Lock()
+        self._exit_mode = False
 
-    def _init_gemini(self, api_key: str):
+    # ══════════════════════════════════════════════════════════════════
+    #  PIPELINE 1: LOCAL SCENE (YOLO + spatial — no API)
+    # ══════════════════════════════════════════════════════════════════
+    def _on_scene_query(self, question: str):
+        """Describe surroundings or what's ahead using local models only."""
+        self._stop_nav_for_vision()
+        self._run_vision_task(self._answer_scene_local, question)
+
+    def _answer_scene_local(self, question: str, frame):
+        q = question.lower()
+        if any(k in q for k in ("ahead", "front", "path", "obstacle", "clear")):
+            answer = describe_ahead(frame)
+        else:
+            answer = describe_scene(frame)
+        print(f"[Local] Scene: '{answer}'")
+        self.tts.speak(answer, priority=True)
+
+    # ══════════════════════════════════════════════════════════════════
+    #  PIPELINE 2: PRODUCT ID (Gemini Vision — products / labels only)
+    # ══════════════════════════════════════════════════════════════════
+    def _on_identify_product(self, question: str):
+        """Identify product, brand, price via Gemini; CLIP+OCR fallback if offline."""
+        self._stop_nav_for_vision()
+        self._run_vision_task(self._answer_product, question)
+
+    def _answer_product(self, question: str, frame):
+        detections = detect_objects(frame)
+        crop, bbox, _ = get_product_crop(frame, detections)
+
+        ocr_text = ""
         try:
-            from google import genai
-            self._gemini_client = genai.Client(api_key=api_key)
-            self._gemini_available = True
-            print("[NaviLens] Gemini 2.0 Flash connected.")
-        except ImportError:
-            print("[NaviLens] google-genai not installed. Run: pip install google-genai")
+            ocr_text = self._ocr.extract_text(frame, bbox)
         except Exception as e:
-            print(f"[NaviLens] Gemini error: {e}")
+            print(f"[OCR] Skipped: {e}")
 
-    # ══════════════════════════════════════════════════════════════════
-    #  PIPELINE 1: GEMINI VISUAL Q&A  (unchanged from original)
-    # ══════════════════════════════════════════════════════════════════
-    def _on_question(self, question: str):
-        """Called when Whisper routes a semantic question to Gemini.
-        Auto-stops navigation mode — Gemini takes priority."""
-        # Stop navigation if active (user switched to Q&A mode)
-        with self._nav_lock:
-            if self._nav_active:
-                self._nav_active = False
-                print("[Nav] ═══ Navigation auto-stopped (Gemini question) ═══")
-                with self._depth_vis_lock:
-                    self._latest_depth_vis = None
+        if self._gemini_products:
+            name, price = self._smart_id.identify_with_gemini(ocr_text, crop)
+            source = "Gemini"
+        else:
+            name, price = self._smart_id.identify_local(ocr_text, crop)
+            source = "local CLIP"
 
+        if price:
+            answer = f"This looks like {name}. Price on label: {price}."
+        elif name and name != "object":
+            answer = f"This looks like {name}."
+        else:
+            answer = (
+                "I couldn't identify the product clearly. "
+                "Hold it closer to the camera and try again."
+            )
+
+        print(f"[Product/{source}] '{answer}'")
+        self.tts.speak(answer, priority=True)
+
+    def _run_vision_task(self, task_fn, question: str):
         with self._processing_lock:
             if self._processing:
-                print("[NaviLens] Already processing a question, skipping.")
+                self.tts.speak("One moment, still processing.", priority=True)
                 return
             self._processing = True
 
@@ -113,83 +148,40 @@ class NaviLens:
                 self._processing = False
             return
 
-        if not self._gemini_available:
-            self.tts.speak("Gemini is not configured. Please provide an API key.", priority=True)
-            with self._processing_lock:
-                self._processing = False
-            return
-
-        threading.Thread(
-            target=self._ask_gemini,
-            args=(question, frame),
-            daemon=True,
-        ).start()
-
-    def _ask_gemini(self, question: str, frame):
-        """Send frame + question to Gemini, speak the answer."""
-        try:
-            from google.genai import types
-
-            success, jpeg_bytes = cv2.imencode(
-                ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85]
-            )
-            if not success:
-                self.tts.speak("Failed to capture image.", priority=True)
-                return
-
-            image_part = types.Part.from_bytes(
-                data=jpeg_bytes.tobytes(),
-                mime_type="image/jpeg",
-            )
-
-            prompt = (
-                f"You are a visual assistant for a visually impaired person. "
-                f"They are asking: \"{question}\"\n\n"
-                f"Look at the image from their camera and answer their question. "
-                f"Be concise (1-2 sentences max), accurate, and helpful. "
-                f"If they ask about an object, identify it specifically "
-                f"(brand name, product type, color, etc.). "
-                f"If you see a price (Rs., MRP, ₹), mention it. "
-                f"Speak naturally as if talking to them."
-            )
-
-            print(f"[Gemini] Asking: '{question}'")
-            response = self._gemini_client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=[image_part, prompt],
-            )
-
-            answer = response.text.strip()
-            print(f"[Gemini] Answer: '{answer}'")
-            self.tts.speak(answer, priority=True)
-
-        except Exception as e:
-            error_str = str(e)
-            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
-                self.tts.speak("Please wait a moment and try again.", priority=True)
-                print("[Gemini] Rate limited.")
-            else:
-                print(f"[Gemini] Error: {e}")
+        def worker():
+            try:
+                task_fn(question, frame)
+            except Exception as e:
+                print(f"[Vision] Error: {e}")
                 self.tts.speak("Sorry, I couldn't process that. Try again.", priority=True)
-        finally:
-            with self._processing_lock:
-                self._processing = False
+            finally:
+                with self._processing_lock:
+                    self._processing = False
 
-    # ══════════════════════════════════════════════════════════════════
-    #  PIPELINE 2: LOCAL NAVIGATION  (depth + YOLO, fully local)
-    # ══════════════════════════════════════════════════════════════════
-    def _on_nav_command(self, text: str):
-        """Called when Whisper routes a general navigation command."""
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _stop_nav_for_vision(self):
         with self._nav_lock:
             if self._nav_active:
-                # Already navigating — treat as status request
-                self.tts.speak("Navigation is active. Say stop navigation to exit.", priority=True)
-                return
+                self._nav_active = False
+                print("[Nav] Stopped for vision query")
+                with self._depth_vis_lock:
+                    self._latest_depth_vis = None
 
+    # ══════════════════════════════════════════════════════════════════
+    #  PIPELINE 3: LOCAL NAVIGATION (depth + path planner — no API)
+    # ══════════════════════════════════════════════════════════════════
+    def _on_nav_command(self, text: str):
+        with self._nav_lock:
+            if self._nav_active:
+                self.tts.speak(
+                    "Navigation is active. Say stop navigation to exit.",
+                    priority=True,
+                )
+                return
         self._start_navigation(exit_mode=False)
 
     def _on_exit_command(self, text: str):
-        """Called when the user says 'find the exit' / 'help me leave the room'."""
         with self._nav_lock:
             nav_on = self._nav_active
 
@@ -201,7 +193,6 @@ class NaviLens:
             return
 
         if nav_on and not self._exit_mode:
-            # Switch from standard nav to exit mode without restarting the loop
             self._exit_mode = True
             self._nav.start_exit_mode()
             self.tts.speak(
@@ -210,11 +201,9 @@ class NaviLens:
             )
             return
 
-        # Start fresh in exit mode
         self._start_navigation(exit_mode=True)
 
     def _start_navigation(self, exit_mode: bool = False):
-        """Activate continuous local navigation mode (standard or exit-seeking)."""
         with self._nav_lock:
             if self._nav_active:
                 return
@@ -225,54 +214,43 @@ class NaviLens:
 
         if exit_mode:
             self._nav.start_exit_mode()
-            print("[Nav] ═══ Exit-seeking mode ACTIVATED ═══")
+            print("[Nav] Exit-seeking mode ACTIVATED")
             self.tts.speak(
-                "Exit mode activated. "
-                "I'll find the nearest door and guide you out. "
-                "Please look around slowly if I ask you to scan.",
+                "Exit mode activated. I'll guide you to the nearest door.",
                 priority=True,
             )
         else:
-            print("[Nav] ═══ Navigation mode ACTIVATED ═══")
+            print("[Nav] Navigation mode ACTIVATED")
             self.tts.speak(
                 "Navigation mode activated. "
-                "I'll give you turn-by-turn directions based on free space ahead.",
+                "Turn-by-turn guidance is fully local on this device.",
                 priority=True,
             )
 
-        self._nav_thread = threading.Thread(
-            target=self._nav_loop,
-            daemon=True,
-        )
+        self._nav_thread = threading.Thread(target=self._nav_loop, daemon=True)
         self._nav_thread.start()
 
     def _stop_navigation(self):
-        """Deactivate navigation mode (both standard and exit)."""
         with self._nav_lock:
             if not self._nav_active:
                 return
             self._nav_active = False
 
         self._exit_mode = False
-        print("[Nav] ═══ Navigation mode DEACTIVATED ═══")
+        print("[Nav] Navigation DEACTIVATED")
         self.tts.speak("Navigation stopped.", priority=True)
-
-        # Clear depth visualization
         with self._depth_vis_lock:
             self._latest_depth_vis = None
 
     def _on_stop_nav(self):
-        """Called when user says 'stop navigation'."""
         self._stop_navigation()
 
     def _nav_loop(self):
-        """Continuous navigation analysis loop (runs in background thread)."""
         while True:
             with self._nav_lock:
                 if not self._nav_active:
                     break
 
-            # Get latest frame
             with self._frame_lock:
                 frame = self._latest_frame
                 if frame is not None:
@@ -282,37 +260,23 @@ class NaviLens:
                 time.sleep(0.1)
                 continue
 
-            # Analyze with depth + YOLO
             try:
-                state_key, announcement, depth_vis = self._nav.analyze(frame)
-
-                # Store depth visualization for display
+                state_key, announcement, nav_vis = self._nav.analyze(frame)
                 with self._depth_vis_lock:
-                    self._latest_depth_vis = depth_vis
-
-                # Speak only if state changed
+                    self._latest_depth_vis = nav_vis
                 if announcement:
                     print(f"[Nav] {announcement}")
                     self.tts.speak(announcement, priority=True)
-
             except Exception as e:
                 print(f"[Nav] Analysis error: {e}")
 
-            # Throttle to ~2 fps
             time.sleep(self._nav_interval)
 
-    # ══════════════════════════════════════════════════════════════════
-    #  APP LIFECYCLE
-    # ══════════════════════════════════════════════════════════════════
     def _on_stop(self):
-        """Called when user says stop/quit/exit."""
         self._stop_navigation()
         self.tts.speak("Stopping NaviLens.", priority=True)
         self.running = False
 
-    # ══════════════════════════════════════════════════════════════════
-    #  MAIN LOOP
-    # ══════════════════════════════════════════════════════════════════
     def run(self):
         cap = cv2.VideoCapture(self.source)
         if not cap.isOpened():
@@ -322,13 +286,21 @@ class NaviLens:
         frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self._nav.set_frame_size(frame_w, frame_h)
+        set_vision_frame_size(frame_w, frame_h)
 
         self.voice.start()
         self.running = True
+
+        gemini_status = (
+            "Product identification uses Gemini."
+            if self._gemini_products
+            else "Product ID uses local CLIP only; set GEMINI_API_KEY for brands and prices."
+        )
         self.tts.speak(
-            "NaviLens ready. "
-            "Ask me a question, say navigate me to start navigation, "
-            "or say find the exit to guide you out of the room.",
+            "NaviLens ready. Navigation and scene description run locally on this device. "
+            f"{gemini_status} "
+            "Say navigate me to walk, find the exit to leave a room, "
+            "what is this for a product, or describe surroundings.",
             priority=True,
         )
 
@@ -344,23 +316,21 @@ class NaviLens:
 
                 if self.show_window:
                     display = frame.copy()
-
-                    # Status bar
                     with self._nav_lock:
                         nav_on = self._nav_active
 
                     if nav_on:
                         if self._exit_mode:
-                            status = "EXIT MODE | Say 'stop navigation' to cancel | Q to quit"
-                            color  = (255, 0, 255)
+                            status = "EXIT (local) | stop navigation | Q quit"
+                            color = (255, 0, 255)
                         else:
-                            status = "NAVIGATING | Say 'stop navigation' to exit | Q to quit"
-                            color  = (0, 200, 255)
+                            status = "NAV (local) | stop navigation | Q quit"
+                            color = (0, 200, 255)
                     elif self._processing:
-                        status = "Thinking... | Q to quit"
+                        status = "Vision... | Q quit"
                         color = (255, 200, 0)
                     else:
-                        status = "Listening... | Q to quit"
+                        status = "Listening | Q quit"
                         color = (0, 255, 0)
 
                     cv2.putText(
@@ -369,7 +339,6 @@ class NaviLens:
                     )
                     cv2.imshow("NaviLens", display)
 
-                    # Guidance HUD (path + directions) when navigating
                     if nav_on:
                         with self._depth_vis_lock:
                             guide_vis = self._latest_depth_vis

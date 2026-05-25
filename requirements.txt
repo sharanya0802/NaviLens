@@ -13,8 +13,11 @@ pyttsx3>=2.90               # Offline TTS
 gTTS>=2.5.1                 # Online Google TTS (optional)
 pygame>=2.6.0               # Audio playback for gTTS
 
-# ── Gemini AI (visual Q&A — called only on semantic questions) ────────────────
-google-genai>=1.0.0         # Gemini 2.5 Flash Vision API
+# ── Product identification (Gemini — products/labels only, not navigation) ───
+google-genai>=1.0.0         # Gemini Vision for brand/price on packages
+open-clip-torch>=2.24.0     # Local CLIP fallback when Gemini unavailable
+easyocr>=1.7.0              # Label text extraction (local)
+Pillow>=10.0.0
 
 # ── Depth Estimation (local navigation) ──────────────────────────────────────
 timm>=1.0.0                 # MiDaS dependency for depth model transforms

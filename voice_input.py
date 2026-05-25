@@ -1,22 +1,19 @@
 """
-voice_input.py — Whisper-based always-on voice listener with intent routing.
+voice_input.py — Whisper-based voice listener with intent routing.
 
-Routes user speech to one of:
-  1. Gemini Q&A pipeline (semantic/visual questions)
-  2. Local navigation pipeline (spatial/movement commands)
-  3. Exit-seeking pipeline ("find the exit" / "help me leave")
-
-Default → Gemini, unless navigation/exit keywords are explicitly present.
+Routes to:
+  - Local navigation (depth + path planner)
+  - Local scene description (YOLO + spatial)
+  - Product identification (Gemini Vision — products / labels only)
 """
 
 import threading
 import numpy as np
 from typing import Callable
 
-# ── Keyword sets for routing ─────────────────────────────────────────
 NAV_KEYWORDS = {
     "navigate", "navigation", "move", "obstacle", "path", "walk",
-    "avoid", "direction", "exit", "stairs", "door", "left", "right",
+    "avoid", "direction", "stairs", "door", "left", "right",
     "ahead", "guide", "forward", "backward", "straight",
     "start navigation", "help me walk", "take me", "lead me",
 }
@@ -37,76 +34,110 @@ EXIT_PHRASES = [
     "i want to leave", "i need to leave", "way out",
 ]
 
+PRODUCT_PHRASES = [
+    "what is this", "what's this", "what am i holding", "what am i holding",
+    "identify this", "identify the product", "what product",
+    "read this label", "read the label", "read the price",
+    "what brand", "how much", "what does this say",
+    "what is on this", "what's on this", "tell me about this product",
+]
+
+SCENE_PHRASES = [
+    "what's ahead", "whats ahead", "what is ahead",
+    "describe surroundings", "describe the scene", "what do you see",
+    "what can you see", "what is around me", "what's around me",
+    "describe the room", "what is in front of me", "what is in front",
+    "is the path clear", "anything in my way",
+]
+
 STOP_NAV_PHRASES = [
     "stop navigation", "stop navigating", "end navigation",
     "cancel navigation", "stop guiding",
 ]
 
-STOP_WORDS = {"stop", "quit", "exit", "shut down", "shutdown", "turn off"}
+STOP_WORDS = {"stop", "quit", "shut down", "shutdown", "turn off"}
+
+PRODUCT_WORDS = {
+    "product", "brand", "price", "label", "package", "bottle",
+    "holding", "item", "buy", "mrp",
+}
+
+SCENE_WORDS = {
+    "ahead", "around", "surroundings", "scene", "room", "front",
+    "see", "detect", "obstacle", "clear", "path",
+}
 
 
 def classify_intent(text: str) -> str:
     """
-    Classify user speech into one of:
-      'stop'       — shutdown the app
-      'stop_nav'   — stop navigation mode only
-      'find_exit'  — activate exit-seeking mode
-      'navigate'   — activate/continue local navigation
-      'question'   — send to Gemini (default)
+    Returns one of:
+      stop, stop_nav, find_exit, navigate,
+      identify_product, describe_scene
     """
     t = text.lower().strip().rstrip(".!?")
 
-    # Check for app stop
     if t in STOP_WORDS:
         return "stop"
 
-    # Check for stop-navigation phrases
     for phrase in STOP_NAV_PHRASES:
         if phrase in t:
             return "stop_nav"
 
-    # Check for exit-seeking phrases (before general nav)
     for phrase in EXIT_PHRASES:
         if phrase in t:
             return "find_exit"
 
-    # Check for navigation phrases (multi-word, higher priority)
     for phrase in NAV_PHRASES:
         if phrase in t:
             return "navigate"
 
-    # Check for navigation keywords (single words)
+    for phrase in PRODUCT_PHRASES:
+        if phrase in t:
+            return "identify_product"
+
+    for phrase in SCENE_PHRASES:
+        if phrase in t:
+            return "describe_scene"
+
     words = set(t.split())
+
     nav_matches = words & NAV_KEYWORDS
-    if nav_matches and len(nav_matches) >= 1:
-        # Extra check: if "where" appears with semantic words, it's a question
-        semantic_words = {"what", "who", "identify", "describe", "read",
-                          "product", "price", "text", "color", "brand", "label"}
-        if words & semantic_words:
-            return "question"  # semantic takes priority
+    if nav_matches:
+        if words & (PRODUCT_WORDS | {"what", "read", "identify"}):
+            return "identify_product"
+        if words & SCENE_WORDS:
+            return "describe_scene"
         return "navigate"
 
-    # Default: Gemini Q&A
-    return "question"
+    if words & PRODUCT_WORDS or (
+        "what" in words and any(w in t for w in ("holding", "this", "label", "product"))
+    ):
+        return "identify_product"
+
+    if words & SCENE_WORDS or t.startswith("describe"):
+        return "describe_scene"
+
+    if "what" in words or "read" in words:
+        return "identify_product"
+
+    return "describe_scene"
 
 
 class WhisperListener:
-    """
-    Always-on voice listener with intelligent routing.
-    """
-
     def __init__(
         self,
-        question_callback: Callable[[str], None],
         nav_callback: Callable[[str], None],
         exit_callback: Callable[[str], None],
+        scene_callback: Callable[[str], None],
+        product_callback: Callable[[str], None],
         stop_callback: Callable[[], None],
         stop_nav_callback: Callable[[], None],
         whisper_model: str = "base",
     ):
-        self._question_cb = question_callback
         self._nav_cb = nav_callback
         self._exit_cb = exit_callback
+        self._scene_cb = scene_callback
+        self._product_cb = product_callback
         self._stop_cb = stop_callback
         self._stop_nav_cb = stop_nav_callback
         self._whisper_model_name = whisper_model
@@ -143,7 +174,7 @@ class WhisperListener:
             return
         self._thread = threading.Thread(target=self._listen_loop, daemon=True)
         self._thread.start()
-        print("[Voice] Listener started — speak naturally, I'm always listening.")
+        print("[Voice] Listener started.")
 
     def stop(self):
         self._stop_event.set()
@@ -165,7 +196,7 @@ class WhisperListener:
         with mic as source:
             print("[Voice] Calibrating microphone (2s)...")
             r.adjust_for_ambient_noise(source, duration=2)
-            print("[Voice] Ready — ask questions or say 'navigate me'!")
+            print("[Voice] Ready — navigate, describe scene, or identify product.")
 
             while not self._stop_event.is_set():
                 try:
@@ -174,7 +205,7 @@ class WhisperListener:
                     raw = audio.get_raw_data(convert_rate=16000, convert_width=2)
                     samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
 
-                    segments, info = self._whisper.transcribe(
+                    segments, _info = self._whisper.transcribe(
                         samples,
                         language="en",
                         beam_size=5,
@@ -187,8 +218,6 @@ class WhisperListener:
                         continue
 
                     print(f"[Voice] Heard: '{text}'")
-
-                    # Route based on intent
                     intent = classify_intent(text)
                     print(f"[Voice] Intent → {intent}")
 
@@ -200,8 +229,10 @@ class WhisperListener:
                         self._exit_cb(text)
                     elif intent == "navigate":
                         self._nav_cb(text)
+                    elif intent == "identify_product":
+                        self._product_cb(text)
                     else:
-                        self._question_cb(text)
+                        self._scene_cb(text)
 
                 except Exception as e:
                     err = str(e)

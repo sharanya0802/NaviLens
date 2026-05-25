@@ -1,13 +1,11 @@
 """
-smart_identifier.py — Local-first smart object identification.
+smart_identifier.py — Product identification (CLIP + OCR + optional Gemini).
 
-Pipeline:
-  1. CLIP classifies the object visually (local, no API)
-  2. OCR extracts any visible text (brand names, prices)
-  3. Local heuristics combine CLIP class + OCR text into a description
-  4. Gemini Vision is ONLY used on explicit "what is this" voice command
+Used only for product/label voice commands ("what is this", "read the label").
+Navigation and scene description do not use this module.
 
-No automatic Gemini calls → no rate limiting issues.
+  - identify_local()     → CLIP + OCR (offline fallback)
+  - identify_with_gemini() → Gemini Vision for brand, product type, MRP
 """
 
 import re

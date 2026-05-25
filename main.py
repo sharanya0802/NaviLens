@@ -1,6 +1,7 @@
 """
 NaviLens - Voice-Activated Visual Assistant + Navigation
-Main entry point. Run with: python main.py --gemini-api-key YOUR_KEY
+Main entry point. Run with: python main.py
+Optional: --gemini-api-key for product/label identification only.
 """
 
 import argparse
@@ -10,7 +11,7 @@ from navilens import NaviLens
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="NaviLens: Visual Q&A + Depth-Based Navigation for the Visually Impaired"
+        description="NaviLens: Local navigation + Gemini product ID"
     )
     parser.add_argument(
         "--source", type=str, default="0",
@@ -18,7 +19,7 @@ def parse_args():
     )
     parser.add_argument(
         "--gemini-api-key", type=str, default=None,
-        help="Gemini 2.5 Flash API key (or set GEMINI_API_KEY env var)",
+        help="Gemini API key for product/label ID only (or GEMINI_API_KEY env)",
     )
     parser.add_argument(
         "--whisper-model", type=str, default="base",
@@ -42,29 +43,29 @@ if __name__ == "__main__":
     gemini_key = args.gemini_api_key or os.environ.get("GEMINI_API_KEY")
 
     print("=" * 60)
-    print("  NaviLens — Visual Assistant + Navigation")
+    print("  NaviLens — Local Navigation + Product Vision")
     print("  RV College of Engineering | Team UH38")
     print("=" * 60)
     print(f"  Source   : {args.source}")
     print(f"  Whisper  : {args.whisper_model}")
     print(f"  TTS      : {args.tts_engine}")
-    print(f"  Gemini   : {'Connected' if gemini_key else 'NOT SET'}")
+    print(f"  Gemini   : {'ON (products only)' if gemini_key else 'OFF (CLIP fallback)'}")
     print("=" * 60)
-    print("  QUESTION MODE (→ Gemini):")
-    print("    'What am I holding?'")
-    print("    'Read this label'")
-    print("    'What color is this?'")
+    print("  LOCAL (no API):")
+    print("    Navigation — 'Navigate me' / 'Find the exit'")
+    print("    Scene      — 'What's ahead?' / 'Describe surroundings'")
     print()
-    print("  NAVIGATION MODE (→ Local depth + path planning):")
-    print("    'Navigate me forward' / 'Guide me'")
-    print("    'Find the exit' / 'Help me leave the room'")
-    print("    'Stop navigation'")
+    print("  GEMINI (products only):")
+    print("    'What is this?' / 'Read this label' / 'What brand is this?'")
     print()
-    print("  Say 'stop' to quit.")
+    print("  Say 'stop navigation' or 'stop' to quit.")
     print("=" * 60 + "\n")
 
     if not gemini_key:
-        print("WARNING: No Gemini API key. Q&A mode disabled. Navigation still works.")
+        print(
+            "Note: No Gemini key — product ID uses local CLIP+OCR only.\n"
+            "      Set GEMINI_API_KEY for brand names and prices on packages.\n"
+        )
 
     app = NaviLens(
         source=args.source,

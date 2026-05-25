@@ -23,15 +23,16 @@ Camera frame
                         └── "Door at your 2 o'clock, about 5 steps."
 ```
 
-**Two pipelines (by voice intent):**
+**Three pipelines (by voice intent):**
 
 | Mode | Backend | Example commands |
 |------|---------|------------------|
-| **Q&A** | Gemini 2.0 Flash | "What am I holding?", "Read this label" |
-| **Navigation** | 100% local (depth + YOLO) | "Navigate forward", "Guide me" |
-| **Exit** | Local + door/opening fusion | "Find the exit", "Help me leave the room" |
+| **Navigation** | 100% local (MiDaS + path planner + YOLO) | "Navigate forward", "Guide me" |
+| **Exit** | 100% local (door + depth openings) | "Find the exit", "Help me leave the room" |
+| **Scene** | 100% local (YOLO + spatial reasoning) | "What's ahead?", "Describe surroundings" |
+| **Product** | Gemini Vision (+ CLIP/OCR fallback) | "What is this?", "Read this label" |
 
-Navigation never calls the cloud. Gemini is only used for semantic questions.
+Navigation and scene description **never** call Gemini. Gemini is only for identifying products, brands, and prices on labels.
 
 ---
 
@@ -48,6 +49,10 @@ NaviLens/
 ├── guidance_composer.py ← Turn-by-turn speech state machine
 ├── exit_detector.py     ← Door / opening tracker (clock-face bearing)
 ├── exit_navigation.py   ← "Leave the room" narrator
+├── local_vision.py      ← Local scene description (YOLO + spatial)
+├── smart_identifier.py  ← Product ID (CLIP + OCR + Gemini)
+├── ocr_engine.py        ← EasyOCR on product crops
+├── clip_classifier.py   ← Local product categories (offline fallback)
 ├── voice_input.py       ← Whisper + intent routing
 ├── tts_engine.py        ← Priority speech queue
 └── requirements.txt
@@ -69,7 +74,7 @@ pip install -r requirements.txt
 sudo apt install portaudio19-dev python3-pyaudio
 ```
 
-Set Gemini key for Q&A (optional for navigation):
+Set Gemini key for **product identification only** (navigation works without it):
 
 ```bash
 export GEMINI_API_KEY=your_key_here
@@ -99,7 +104,8 @@ python main.py --no-show
 | "Navigate me forward" / "Guide me" | Start turn-by-turn navigation |
 | "Find the exit" / "Help me leave the room" | Exit mode — door + depth openings |
 | "Stop navigation" | End navigation only |
-| "What is this?" / "Read the label" | Gemini visual Q&A |
+| "What is this?" / "Read the label" | Gemini product ID (CLIP if no key) |
+| "What's ahead?" / "Describe surroundings" | Local YOLO + spatial |
 | "Stop" | Quit application |
 
 ---
@@ -144,7 +150,8 @@ This is a debug/verification view; blind users rely on **audio only**.
 | Depth | MiDaS small | Free space, walls, openings |
 | Detection | YOLOv8n | Semantic obstacles, doors |
 | Speech | Whisper base | Voice commands (local) |
-| Q&A | Gemini 2.0 Flash | Visual questions only |
+| Product ID | Gemini 2.0 Flash (+ CLIP/OCR fallback) | Labels, brands, prices only |
+| Scene | YOLOv8n + spatial | Surroundings, obstacles ahead |
 
 ---
 
