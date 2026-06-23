@@ -1,6 +1,6 @@
 """
-detection.py — YOLOv10 Object Detector
-Uses Ultralytics YOLOv10 (NMS-free). Auto-downloads model weights on first run.
+detection.py — YOLOv8 Object Detector
+Uses Ultralytics YOLOv8. Auto-downloads model weights on first run.
 """
 
 from dataclasses import dataclass
@@ -55,18 +55,19 @@ OBJECT_CLASSES = {
 
 class ObjectDetector:
     """
-    Wraps YOLOv10 for NaviLens.
+    Wraps YOLO for NaviLens.
     
-    Model options (auto-downloaded):
-        yolov10n.pt — nano   (fastest,  ~2.3M params) ← recommended for RPi
-        yolov10s.pt — small  (~7.2M  params)
-        yolov10m.pt — medium (~15.4M params)
-        yolov10b.pt — balanced (~19.1M params)
-        yolov10l.pt — large  (~24.4M params)
-        yolov10x.pt — xlarge (~29.5M params, most accurate)
+    Model options (auto-downloaded on first run):
+        yolov8n.pt — nano   (fastest,  3.2M params) ← recommended for RPi
+        yolov8s.pt — small  (11.2M params)
+        yolov8m.pt — medium (25.9M params)
+        yolo26s.pt — YOLO26 small  (better accuracy than v8)
+        yolo26m.pt — YOLO26 medium
+        yolo26l.pt — YOLO26 large  ← recommended for GPU
+        yolo26x.pt — YOLO26 xlarge (most accurate)
     """
 
-    def __init__(self, model_name: str = "yolov10s.pt", conf: float = 0.45):
+    def __init__(self, model_name: str = "yolo26l.pt", conf: float = 0.40):
         self.model = YOLO(model_name)
         self.conf = conf
         self._frame_area: int = 1  # updated once frame size is known
@@ -80,10 +81,14 @@ class ObjectDetector:
     def set_frame_area(self, w: int, h: int):
         self._frame_area = w * h
 
-    def detect(self, frame: np.ndarray) -> List[Detection]:
+    def detect(self, frame: np.ndarray, augment: bool = False) -> List[Detection]:
         """
         Run inference on a single BGR frame.
         Returns a list of Detection objects, sorted by proximity (area_ratio desc).
+        
+        Args:
+            frame: BGR image from OpenCV.
+            augment: If True, use test-time augmentation (slower but more accurate).
         """
         if self._frame_area == 1:
             h, w = frame.shape[:2]
@@ -92,8 +97,10 @@ class ObjectDetector:
         results = self.model(
             frame,
             conf=self.conf,
-            verbose=False,        # suppress per-frame console spam
+            verbose=False,
             stream=False,
+            imgsz=640,
+            augment=augment,
         )[0]
 
         detections: List[Detection] = []

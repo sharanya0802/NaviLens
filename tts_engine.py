@@ -1,88 +1,80 @@
 """
-tts_engine.py — Priority-Based Text-to-Speech Engine
+tts_engine.py — Text-to-Speech Engine (Windows System.Speech)
 
-Two modes:
-  pyttsx3 — offline, works on RPi without internet, lower latency
-  gtts    — Google TTS, better voice quality, requires internet
-
+Uses PowerShell's built-in System.Speech synthesis — no extra dependencies.
 Priority queue: urgent messages preempt descriptive ones.
 """
 
+import subprocess
 import threading
 import queue
 import time
 from dataclasses import dataclass, field
-from typing import Literal
 
 
 @dataclass(order=True)
 class _SpeechItem:
-    priority: int           # 0 = urgent, 1 = normal
+    priority: int
     timestamp: float = field(compare=False)
     text: str = field(compare=False)
 
 
 class TTSEngine:
     """
-    Thread-safe, priority-queued TTS engine.
-    
+    Thread-safe, priority-queued TTS engine using Windows System.Speech.
+
     Usage:
-        tts = TTSEngine(engine="pyttsx3")
-        tts.speak("Obstacle ahead!", priority=True)     # preempts queue
-        tts.speak("You are walking on a footpath.", priority=False)
+        tts = TTSEngine()
+        tts.speak("Obstacle ahead!", priority=True)
+        tts.speak("Path appears clear.", priority=False)
         tts.shutdown()
     """
 
-    def __init__(self, engine: Literal["pyttsx3", "gtts"] = "pyttsx3"):
-        self._engine_type = engine
+    def __init__(self):
         self._queue: queue.PriorityQueue = queue.PriorityQueue()
         self._stop_event = threading.Event()
-        self._current_lock = threading.Lock()
+        self._available = self._check_available()
         self._speaking = False
-
-        self._init_engine()
+        self._last_spoke_time = 0.0
+        self._speak_lock = threading.Lock()
 
         self._worker = threading.Thread(target=self._worker_loop, daemon=True)
         self._worker.start()
 
-    # ── Engine initialisation ─────────────────────────────────────────────────
-    def _init_engine(self):
-        if self._engine_type == "pyttsx3":
-            try:
-                import pyttsx3
-                self._tts = pyttsx3.init()
-                self._tts.setProperty("rate", 160)      # slightly slower for clarity
-                self._tts.setProperty("volume", 1.0)
-                # Prefer a female voice if available (often clearer)
-                voices = self._tts.getProperty("voices")
-                for v in voices:
-                    if "female" in v.name.lower() or "zira" in v.name.lower():
-                        self._tts.setProperty("voice", v.id)
-                        break
-            except ImportError:
-                print("[TTS] pyttsx3 not found. Falling back to print mode.")
-                self._engine_type = "print"
-                self._tts = None
+    @property
+    def is_speaking(self) -> bool:
+        """True while TTS is actively outputting speech."""
+        return self._speaking
 
-        elif self._engine_type == "gtts":
-            try:
-                from gtts import gTTS
-                import pygame
-                pygame.mixer.init()
-                self._gtts_cls = gTTS
-                self._pygame = pygame
-            except ImportError:
-                print("[TTS] gTTS or pygame not found. Falling back to print mode.")
-                self._engine_type = "print"
-                self._tts = None
+    @property
+    def last_spoke_ago(self) -> float:
+        """Seconds since last speech finished. Inf if never spoken."""
+        if self._last_spoke_time == 0.0:
+            return float("inf")
+        return time.time() - self._last_spoke_time
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    def _check_available(self) -> bool:
+        try:
+            result = subprocess.run(
+                [
+                    "powershell", "-ExecutionPolicy", "Bypass", "-Command",
+                    "Add-Type -AssemblyName System.Speech; "
+                    "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                    "Write-Host $($s.GetInstalledVoices().Count)"
+                ],
+                capture_output=True, text=True, timeout=10,
+            )
+            available = result.returncode == 0 and result.stdout.strip() not in ("", "0")
+            if available:
+                print(f"[TTS] Windows System.Speech ready ({result.stdout.strip()} voice(s)).")
+            else:
+                print(f"[TTS] Windows System.Speech not available: {result.stderr.strip()}")
+            return available
+        except Exception as e:
+            print(f"[TTS] TTS check failed: {e}")
+            return False
+
     def speak(self, text: str, priority: bool = False):
-        """
-        Enqueue a speech item.
-          priority=True  → obstacle warnings (queue priority 0)
-          priority=False → descriptive info   (queue priority 1)
-        """
         if not text or not text.strip():
             return
         item = _SpeechItem(
@@ -92,11 +84,23 @@ class TTSEngine:
         )
         self._queue.put(item)
 
+    def flush(self):
+        """Clear all pending messages from the queue (e.g. on navigation stop)."""
+        cleared = 0
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+                self._queue.task_done()
+                cleared += 1
+            except queue.Empty:
+                break
+        if cleared:
+            print(f"[TTS] Flushed {cleared} stale message(s).")
+
     def shutdown(self):
         self._stop_event.set()
         self._worker.join(timeout=3)
 
-    # ── Worker thread ─────────────────────────────────────────────────────────
     def _worker_loop(self):
         while not self._stop_event.is_set():
             try:
@@ -104,7 +108,6 @@ class TTSEngine:
             except queue.Empty:
                 continue
 
-            # Drop stale low-priority items (older than 5 s)
             if item.priority == 1 and (time.time() - item.timestamp) > 5.0:
                 self._queue.task_done()
                 continue
@@ -113,30 +116,29 @@ class TTSEngine:
             self._queue.task_done()
 
     def _say(self, text: str):
-        print(f"[TTS] ▶ {text}")
+        print(f"[TTS] {text}")
 
-        if self._engine_type == "pyttsx3":
-            try:
-                self._tts.say(text)
-                self._tts.runAndWait()
-            except Exception as e:
-                print(f"[TTS] pyttsx3 error: {e}")
+        if not self._available:
+            return
 
-        elif self._engine_type == "gtts":
-            try:
-                import io
-                import os
-                tts_obj = self._gtts_cls(text=text, lang="en", slow=False)
-                mp3_fp = io.BytesIO()
-                tts_obj.write_to_fp(mp3_fp)
-                mp3_fp.seek(0)
-                self._pygame.mixer.music.load(mp3_fp)
-                self._pygame.mixer.music.play()
-                while self._pygame.mixer.music.get_busy():
-                    time.sleep(0.05)
-            except Exception as e:
-                print(f"[TTS] gTTS error: {e}")
+        with self._speak_lock:
+            self._speaking = True
 
-        else:
-            # Print-only fallback (no audio library available)
-            pass
+        escaped = text.replace("'", "''")
+        ps_command = (
+            "Add-Type -AssemblyName System.Speech; "
+            f"(New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{escaped}')"
+        )
+        try:
+            subprocess.run(
+                ["powershell", "-ExecutionPolicy", "Bypass", "-Command", ps_command],
+                capture_output=True, timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            print("[TTS] PowerShell speech timed out.")
+        except Exception as e:
+            print(f"[TTS] PowerShell speech error: {e}")
+        finally:
+            with self._speak_lock:
+                self._speaking = False
+                self._last_spoke_time = time.time()

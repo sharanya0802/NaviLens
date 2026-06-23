@@ -2,7 +2,7 @@
 depth_engine.py — MiDaS monocular depth estimation.
 
 Generates relative depth maps from single camera frames.
-Higher values = further away, lower values = closer.
+Higher values = closer to camera, lower values = further away.
 Used by the navigation pipeline for obstacle detection and free-space analysis.
 """
 
@@ -53,7 +53,7 @@ class DepthEngine:
 
         Returns:
             Depth map (H, W) float32, normalized 0-1.
-            Higher values = further from camera.
+            Higher values = closer to camera.
         """
         self._ensure_loaded()
 
@@ -74,16 +74,13 @@ class DepthEngine:
         depth = prediction.cpu().numpy()
 
         # MiDaS outputs inverse depth (closer = higher value).
-        # Normalize to 0-1 range where higher = further away.
+        # Normalize to 0-1 range, keeping higher = closer.
         depth_min = depth.min()
         depth_max = depth.max()
         if depth_max - depth_min > 0:
             depth = (depth - depth_min) / (depth_max - depth_min)
         else:
             depth = np.zeros_like(depth)
-
-        # Invert: MiDaS gives high=close, we want high=far
-        depth = 1.0 - depth
 
         return depth.astype(np.float32)
 
